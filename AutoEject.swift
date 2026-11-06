@@ -13,6 +13,11 @@ enum Prefs {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
+    static let remountKey = "autoRemountEnabled"
+    static var remount: Bool {
+        get { UserDefaults.standard.object(forKey: remountKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: remountKey) }
+    }
 }
 
 // MARK: - Đọc trạng thái nắp máy
@@ -65,6 +70,39 @@ func ejectAll(dryRun: Bool = false) -> EjectResult {
     return result
 }
 
+// MARK: - Mount lại
+
+/// Tên BSD (vd "disk5") của các ổ ngoài vật lý đang cắm, kể cả khi chưa mount.
+func connectedExternalDisks() -> [String] {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+    p.arguments = ["list", "-plist", "external", "physical"]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return [] }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+          let list = plist["AllDisksAndPartitions"] as? [[String: Any]] else { return [] }
+    return list.compactMap { $0["DeviceIdentifier"] as? String }
+}
+
+/// Mount mọi volume của các ổ ngoài đang cắm. Trả về tên các volume mới xuất hiện.
+func mountAll() -> [String] {
+    let before = Set(externalVolumes().map { $0.path })
+    for disk in connectedExternalDisks() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+        p.arguments = ["mountDisk", disk]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+    }
+    return externalVolumes().filter { !before.contains($0.path) }.map { $0.lastPathComponent }
+}
+
 func notify(_ title: String, _ body: String) {
     let esc = { (s: String) in s.replacingOccurrences(of: "\"", with: "'") }
     let script = "display notification \"\(esc(body))\" with title \"\(esc(title))\""
@@ -79,6 +117,7 @@ func notify(_ title: String, _ body: String) {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var enabledItem: NSMenuItem!
+    private var remountItem: NSMenuItem!
     private var loginItem: NSMenuItem!
     private var lastItem: NSMenuItem!
     private var lidWasClosed = false
@@ -99,15 +138,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(willSleep),
             name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(didWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     private func tick() {
         let closed = isLidClosed()
         defer { lidWasClosed = closed }
         if closed && !lidWasClosed { handleTrigger(reason: "gập máy") }
+        if !closed && lidWasClosed { scheduleRemount(reason: "mở máy") }
     }
 
     @objc private func willSleep(_ n: Notification) { handleTrigger(reason: "máy sắp ngủ") }
+    @objc private func didWake(_ n: Notification) { scheduleRemount(reason: "máy thức dậy") }
+
+    // MARK: Mount lại khi mở máy
+
+    private var lastRemount = Date.distantPast
+    private var remountToken = 0
+
+    private func scheduleRemount(reason: String) {
+        guard Prefs.remount else { return }
+        // Chống chạy trùng (didWake + mở nắp cùng bắn).
+        guard Date().timeIntervalSince(lastRemount) > 5 else { return }
+        lastRemount = Date()
+        remountToken += 1
+        attemptRemount(token: remountToken, attempt: 0, reason: reason)
+    }
+
+    /// Thử lúc ~3s, ~5s, ~9s sau khi thức dậy (USB cần chút thời gian để nhận lại).
+    private func attemptRemount(token: Int, attempt: Int, reason: String) {
+        let delays: [Double] = [3, 2, 4]
+        guard attempt < delays.count else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt]) { [weak self] in
+            guard let self = self, token == self.remountToken else { return }
+            // Nắp còn gập (dark wake / Power Nap) thì thôi, không mount.
+            guard !isLidClosed() else { return }
+            DispatchQueue.global().async {
+                let mounted = mountAll()
+                DispatchQueue.main.async {
+                    guard token == self.remountToken else { return }
+                    if mounted.isEmpty {
+                        self.attemptRemount(token: token, attempt: attempt + 1, reason: reason)
+                    } else {
+                        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+                        self.lastItem.title = "\(f.string(from: Date())) (\(reason)): đã mount \(mounted.count)"
+                        notify("AutoEject", "Đã mount lại: " + mounted.joined(separator: ", "))
+                    }
+                }
+            }
+        }
+    }
 
     private func handleTrigger(reason: String) {
         guard Prefs.enabled else { return }
@@ -145,6 +227,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         enabledItem.state = Prefs.enabled ? .on : .off
         menu.addItem(enabledItem)
 
+        remountItem = NSMenuItem(title: "Tự mount lại khi mở máy", action: #selector(toggleRemount), keyEquivalent: "")
+        remountItem.target = self
+        remountItem.state = Prefs.remount ? .on : .off
+        menu.addItem(remountItem)
+
         let now = NSMenuItem(title: "Eject tất cả ngay", action: #selector(ejectNow), keyEquivalent: "e")
         now.target = self
         menu.addItem(now)
@@ -172,6 +259,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.appearsDisabled = !Prefs.enabled
     }
 
+    @objc private func toggleRemount() {
+        Prefs.remount.toggle()
+        remountItem.state = Prefs.remount ? .on : .off
+    }
+
     @objc private func ejectNow() {
         let r = ejectAll()
         if r.ejected.isEmpty && r.failed.isEmpty { notify("AutoEject", "Không có ổ ngoài nào đang cắm.") }
@@ -196,6 +288,13 @@ if CommandLine.arguments.contains("--dry-run") {
     print("Nắp máy đang gập: \(isLidClosed())")
     let r = ejectAll(dryRun: true)
     print("Sẽ eject: \(r.ejected)")
+    print("Ổ ngoài đang cắm (sẽ mount lại): \(connectedExternalDisks())")
+    exit(0)
+}
+
+// Kiểm thử mount lại thật:  AutoEject --remount-now
+if CommandLine.arguments.contains("--remount-now") {
+    print("Đã mount: \(mountAll())")
     exit(0)
 }
 

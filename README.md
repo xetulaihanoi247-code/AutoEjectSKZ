@@ -6,6 +6,7 @@
 - Phát hiện gập nắp (đọc `AppleClamshellState`), kể cả khi cắm màn hình ngoài.
 - Eject thêm khi máy sắp ngủ (phòng hờ).
 - Chỉ eject ổ ngoài/tháo được; bỏ qua ổ trong, ổ hệ thống, ổ mạng.
+- **Mount lại khi mở máy**: khi máy thức dậy hoặc mở nắp, đợi ~3s rồi tự mount các ổ ngoài đang cắm (thử lại ở ~5s và ~9s nếu USB chưa sẵn sàng). Tắt được trong menu.
 - Báo lỗi bằng notification nếu ổ đang bận.
 - Menu: bật/tắt tự động, "Eject tất cả ngay", khởi động cùng máy.
 
@@ -28,7 +29,7 @@ Yêu cầu: macOS 13+, Xcode Command Line Tools (`swiftc`).
 ./build.sh --zip         # đóng gói build/AutoEject.zip để phát hành
 ```
 
-Kiểm thử không eject thật: `AutoEject --dry-run`.
+Kiểm thử: `AutoEject --dry-run` (không eject thật), `AutoEject --remount-now` (mount lại ngay).
 
 ## Icon
 `make_icon.swift` vẽ icon nút bấm 3D → `AppIcon.iconset` → `AppIcon.icns`:
