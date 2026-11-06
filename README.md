@@ -9,11 +9,23 @@
 - Báo lỗi bằng notification nếu ổ đang bận.
 - Menu: bật/tắt tự động, "Eject tất cả ngay", khởi động cùng máy.
 
-## Build & cài
+## Cài đặt nhanh (không cần build)
+1. Tải `AutoEject.zip` ở mục **Releases**, giải nén, kéo `AutoEject.app` vào `/Applications`.
+2. **Lần đầu mở**: bấm chuột phải vào app → **Open** → **Open** (app chưa được Apple công chứng nên macOS cảnh báo).
+   Nếu vẫn bị chặn, chạy:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/AutoEject.app
+   ```
+3. Icon eject hiện trên menu bar. Bật "Khởi động cùng máy" trong menu nếu muốn.
+
+Hỗ trợ macOS 13+, cả Apple Silicon lẫn Intel (universal).
+
+## Build từ mã nguồn
 Yêu cầu: macOS 13+, Xcode Command Line Tools (`swiftc`).
 
 ```bash
-./build.sh --install     # build, chép vào /Applications, chạy
+./build.sh --install     # build universal, chép vào /Applications, chạy
+./build.sh --zip         # đóng gói build/AutoEject.zip để phát hành
 ```
 
 Kiểm thử không eject thật: `AutoEject --dry-run`.

@@ -7,8 +7,13 @@ APP="build/AutoEject.app"
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-swiftc -O -target arm64-apple-macos13.0 AutoEject.swift -o "$APP/Contents/MacOS/AutoEject" \
-  -framework Cocoa -framework IOKit -framework ServiceManagement
+# Build universal (Apple Silicon + Intel)
+for ARCH in arm64 x86_64; do
+  swiftc -O -target "$ARCH-apple-macos13.0" AutoEject.swift -o "build/AutoEject-$ARCH" \
+    -framework Cocoa -framework IOKit -framework ServiceManagement
+done
+lipo -create build/AutoEject-arm64 build/AutoEject-x86_64 -output "$APP/Contents/MacOS/AutoEject"
+rm build/AutoEject-arm64 build/AutoEject-x86_64
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -28,6 +33,11 @@ EOF
 
 codesign --force --sign - "$APP"
 echo "Đã build: $(pwd)/$APP"
+
+if [[ "${1:-}" == "--zip" ]]; then
+  ditto -c -k --keepParent "$APP" build/AutoEject.zip
+  echo "Đã đóng gói: $(pwd)/build/AutoEject.zip"
+fi
 
 if [[ "${1:-}" == "--install" ]]; then
   pkill -x AutoEject 2>/dev/null || true
